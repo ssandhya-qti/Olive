@@ -9,7 +9,7 @@ from olive.common.config_utils import ConfigBase, ConfigDictBase
 
 
 class SubMetricResult(ConfigBase):
-    value: Union[float, int]
+    value: Union[float, int, dict]
     priority: int
     higher_is_better: bool
 

@@ -45,6 +45,7 @@ class TorchMetrics(MetricBackend):
         metric_cls = AccuracyBase.registry[sub_metric.name.value]
         metric_obj = metric_cls(sub_metric.metric_config)
         result = metric_obj.measure(model_output, targets)
+        # import pdb;pdb.set_trace()
         return SubMetricResult(
             value=result,
             priority=sub_metric.priority,
