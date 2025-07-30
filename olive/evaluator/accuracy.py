@@ -10,7 +10,6 @@ from typing import Any, Callable, ClassVar, Union
 import torch
 import torchmetrics
 from olive.common.auto_config import AutoConfigClass, ConfigBase
-from olive.common.auto_config import AutoConfigClass, ConfigBase
 from olive.common.config_utils import ConfigParam
 from olive.data.constants import IGNORE_INDEX
 
@@ -69,7 +68,7 @@ class AccuracyBase(AutoConfigClass):
     @classmethod
     def _default_config(cls) -> dict[str, ConfigParam]:
         return cls._metric_config_from_torch_metrics()
-    
+
     @staticmethod
     def prepare_tensors(preds, target, dtypes=torch.int):
         dtypes = dtypes if isinstance(dtypes, (list, tuple)) else [dtypes, dtypes]
@@ -184,9 +183,10 @@ class Perplexity(AccuracyBase):
         result = perplexity.compute()
         return result.item()
 
+##this will give avg values for all metrics
+'''
 class CosineSimilarity(AccuracyBase):
     name: str = "cosine_similarity"
-
     def measure(self, model_output, target):
         preds_tensor, target_tensor = self.prepare_tensors(
             model_output.preds, target, dtypes=torch.float
@@ -229,7 +229,7 @@ class MSE(AccuracyBase):
                 result[k] = compute_mse(preds_tensor[k], target_tensor[k])
             return result
         else:
-            return compute_mse(preds_tensor, target_tensor)
+            return compute_mse(preds_tensor, target_tensor),
 
 class PSNR(AccuracyBase):
     name: str = "psnr"
@@ -305,3 +305,372 @@ class L2Norm(AccuracyBase):
 
         l2 = torch.norm(preds_flat - targets_flat, p=2, dim=1)
         return l2.mean().item()
+'''
+#this will give per sample values along with summary of min avg max
+'''
+class CosineSimilarity(AccuracyBase):
+    name: str = "cosine_similarity"
+
+    def __init__(self, metric_config=None):
+        super().__init__(metric_config)
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(model_output.preds, target, dtypes=torch.float)
+
+        summary = {}
+        if isinstance(preds_tensor, dict):
+            num_samples = next(iter(preds_tensor.values())).shape[0]
+            results = {i: {} for i in range(num_samples)}
+            for key in preds_tensor:
+                similarities = self._compute_similarity(preds_tensor[key], target_tensor[key])
+                for i, sim in enumerate(similarities):
+                    print(f"Sample {i} | Key: '{key}' | Cosine Similarity: {sim.item():.6f}")
+                    results[i][key] = sim.item()
+                summary[key] = {
+                    "min": similarities.min().item(),
+                    "avg": similarities.mean().item(),
+                    "max": similarities.max().item()
+                }
+        else:
+            similarities = self._compute_similarity(preds_tensor, target_tensor)
+            results = {}
+            for i, sim in enumerate(similarities):
+                print(f"Sample {i} | Cosine Similarity: {sim.item():.6f}")
+                results[i] = sim.item()
+            summary = {
+                "min": similarities.min().item(),
+                "avg": similarities.mean().item(),
+                "max": similarities.max().item()
+
+            }
+        return {"samples": results, "summary": summary}
+
+    def _compute_similarity(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+        return torch.nn.functional.cosine_similarity(preds_flat, targets_flat, dim=1)
+
+class MSE(AccuracyBase):
+    name: str = "mse"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(model_output.preds, target, dtypes=torch.float)
+
+        def flatten(tensor):
+            return tensor.view(tensor.shape[0], -1)
+
+        def compute_mse(preds, tgts):
+            preds_flat = flatten(preds)
+            tgts_flat = flatten(tgts)
+            return torch.mean((preds_flat - tgts_flat) ** 2, dim=1)
+
+        summary = {}
+        if isinstance(preds_tensor, dict):
+            num_samples = next(iter(preds_tensor.values())).shape[0]
+            results = {i: {} for i in range(num_samples)}
+            for k in preds_tensor:
+                mse_vals = compute_mse(preds_tensor[k], target_tensor[k])
+                for i, val in enumerate(mse_vals):
+                    print(f"Sample {i} | Key: '{k}' | MSE: {val.item():.6f}")
+                    results[i][k] = val.item()
+                summary[k] = {
+                    "min": mse_vals.min().item(),
+                    "avg": mse_vals.mean().item(),
+                    "max": mse_vals.max().item()
+                }
+        else:
+            mse_vals = compute_mse(preds_tensor, target_tensor)
+            results = {}
+            for i, val in enumerate(mse_vals):
+                print(f"Sample {i} | MSE: {val.item():.6f}")
+                results[i] = val.item()
+            summary = {
+                "min": mse_vals.min().item(),
+                "avg": mse_vals.mean().item(),
+                "max": mse_vals.max().item()
+
+            }
+        return {"samples": results, "summary": summary}
+
+class PSNR(AccuracyBase):
+    name: str = "psnr"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(model_output.preds, target, dtypes=torch.float)
+
+        def compute_psnr(preds, tgts):
+            preds_flat = preds.view(preds.shape[0], -1)
+            tgts_flat = tgts.view(tgts.shape[0], -1)
+            mse = torch.mean((preds_flat - tgts_flat) ** 2, dim=1)
+            epsilon = 1e-7
+            max_pixel = torch.max(tgts_flat, dim=1).values.clamp(min=epsilon)
+            return 20 * torch.log10(max_pixel) - 10 * torch.log10(mse + epsilon)
+
+        summary = {}
+        if isinstance(preds_tensor, dict):
+            num_samples = next(iter(preds_tensor.values())).shape[0]
+            results = {i: {} for i in range(num_samples)}
+            for k in preds_tensor:
+                psnr_vals = compute_psnr(preds_tensor[k], target_tensor[k])
+                for i, val in enumerate(psnr_vals):
+                    print(f"Sample {i} | Key: '{k}' | PSNR: {val.item():.6f}")
+                    results[i][k] = val.item()
+                summary[k] = {
+                    "min": psnr_vals.min().item(),
+                    "avg": psnr_vals.mean().item(),
+                    "max": psnr_vals.max().item(),
+                }
+        else:
+            psnr_vals = compute_psnr(preds_tensor, target_tensor)
+            results = {}
+            for i, val in enumerate(psnr_vals):
+                print(f"Sample {i} | PSNR: {val.item():.6f}")
+                results[i] = val.item()
+            summary = {
+                "min": psnr_vals.min().item(),
+                "avg": psnr_vals.mean().item(),
+                "max": psnr_vals.max().item(),
+            }
+        return {"samples": results, "summary": summary}
+
+class SQNR(AccuracyBase):
+    name: str = "sqnr"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(model_output.preds, target, dtypes=torch.float)
+
+        def compute_sqnr(preds, tgts):
+            preds_flat = preds.view(preds.shape[0], -1)
+            tgts_flat = tgts.view(tgts.shape[0], -1)
+            epsilon = torch.finfo(torch.float32).eps
+            signal_power = torch.norm(tgts_flat, dim=1).clamp(min=epsilon)
+            noise_power = torch.norm(tgts_flat - preds_flat, dim=1).clamp(min=epsilon)
+            return 10 * torch.log10(signal_power / noise_power)
+
+        summary = {}
+        if isinstance(preds_tensor, dict):
+            num_samples = next(iter(preds_tensor.values())).shape[0]
+            results = {i: {} for i in range(num_samples)}
+            for k in preds_tensor:
+                sqnr_vals = compute_sqnr(preds_tensor[k], target_tensor[k])
+                for i, val in enumerate(sqnr_vals):
+                    print(f"Sample {i} | Key: '{k}' | SQNR: {val.item():.6f}")
+                    results[i][k] = val.item()
+                summary[k] = {
+                    "min": sqnr_vals.min().item(),
+                    "avg": sqnr_vals.mean().item(),
+                    "max": sqnr_vals.max().item()
+                }
+        else:
+            sqnr_vals = compute_sqnr(preds_tensor, target_tensor)
+            results = {}
+            for i, val in enumerate(sqnr_vals):
+                print(f"Sample {i} | SQNR: {val.item():.6f}")
+                results[i] = val.item()
+            summary = {
+                "min": sqnr_vals.min().item(),
+                "avg": sqnr_vals.mean().item(),
+                "max": sqnr_vals.max().item()
+            }
+        return {"samples": results, "summary": summary}
+
+class L2Norm(AccuracyBase):
+    name: str = "l2_norm"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(model_output.preds, target, dtypes=torch.float)
+
+        def compute_l2(preds, tgts):
+            preds_flat = preds.view(preds.shape[0], -1)
+            tgts_flat = tgts.view(tgts.shape[0], -1)
+            return torch.norm(preds_flat - tgts_flat, p=2, dim=1)
+
+        summary = {}
+        if isinstance(preds_tensor, dict):
+            num_samples = next(iter(preds_tensor.values())).shape[0]
+            results = {i: {} for i in range(num_samples)}
+            for k in preds_tensor:
+                l2_vals = compute_l2(preds_tensor[k], target_tensor[k])
+                for i, val in enumerate(l2_vals):
+                    print(f"Sample {i} | Key: '{k}' | L2 Norm: {val.item():.6f}")
+                    results[i][k] = val.item()
+                summary[k] = {
+                    "min": l2_vals.min().item(),
+                    "avg": l2_vals.mean().item(),
+                    "max": l2_vals.max().item()
+                }
+        else:
+            l2_vals = compute_l2(preds_tensor, target_tensor)
+            results = {}
+            for i, val in enumerate(l2_vals):
+                print(f"Sample {i} | L2 Norm: {val.item():.6f}")
+                results[i] = val.item()
+            summary = {
+                "min": l2_vals.min().item(),
+                "avg": l2_vals.mean().item(),
+                "max": l2_vals.max().item()
+            }
+        return {"samples": results, "summary": summary}
+'''
+
+#this will give min avg max values for all metrics
+
+class CosineSimilarity(AccuracyBase):
+    name: str = "cosine_similarity"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(
+            model_output.preds, target, dtypes=torch.float
+        )
+
+        if isinstance(preds_tensor, dict):
+            return {
+                key: self._compute_mean_similarity(preds_tensor[key], target_tensor[key])
+                for key in preds_tensor
+            }
+        else:
+            return self._compute_mean_similarity(preds_tensor, target_tensor)
+
+    def _compute_mean_similarity(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+
+        similarities = torch.nn.functional.cosine_similarity(preds_flat, targets_flat, dim=1)
+
+        return {
+            "avg": similarities.mean().item(),
+            "min": similarities.min().item(),
+            "max": similarities.max().item()
+        }
+
+
+class MSE(AccuracyBase):
+    name: str = "mse"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(
+            model_output.preds, target, dtypes=torch.float
+        )
+
+        if isinstance(preds_tensor, dict):
+            return {
+                key: self._compute_mean_mse(preds_tensor[key], target_tensor[key])
+                for key in preds_tensor
+            }
+        else:
+            return self._compute_mean_mse(preds_tensor, target_tensor)
+
+    def _compute_mean_mse(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+
+        mse = torch.mean((preds_flat - targets_flat) ** 2, dim=1)
+
+        return {
+            "avg": mse.mean().item(),
+            "min": mse.min().item(),
+            "max": mse.max().item()
+        }
+
+class PSNR(AccuracyBase):
+    name: str = "psnr"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(
+            model_output.preds, target, dtypes=torch.float
+        )
+
+        if isinstance(preds_tensor, dict):
+            return {
+                key: self._compute_mean_psnr(preds_tensor[key], target_tensor[key])
+                for key in preds_tensor
+            }
+        else:
+            return self._compute_mean_psnr(preds_tensor, target_tensor)
+
+    def _compute_mean_psnr(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+
+        mse = torch.mean((preds_flat - targets_flat) ** 2, dim=1)
+        epsilon = 1e-7
+        max_pixel = torch.max(targets_flat, dim=1).values.clamp(min=epsilon)
+        psnr = 20 * torch.log10(max_pixel) - 10 * torch.log10(mse + epsilon)
+
+        return {
+            "avg": psnr.mean().item(),
+            "min": psnr.min().item(),
+            "max": psnr.max().item()
+        }
+
+class SQNR(AccuracyBase):
+    name: str = "sqnr"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(
+            model_output.preds, target, dtypes=torch.float
+        )
+
+        if isinstance(preds_tensor, dict):
+            return {
+                key: self._compute_mean_sqnr(preds_tensor[key], target_tensor[key])
+                for key in preds_tensor
+            }
+        else:
+            return self._compute_mean_sqnr(preds_tensor, target_tensor)
+
+    def _compute_mean_sqnr(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+
+        epsilon = torch.finfo(torch.float32).eps
+        signal_power = torch.norm(targets_flat, dim=1).clamp(min=epsilon)
+        noise_power = torch.norm(targets_flat - preds_flat, dim=1).clamp(min=epsilon)
+        sqnr = 10 * torch.log10(signal_power / noise_power)
+
+        return {
+            "avg": sqnr.mean().item(),
+            "min": sqnr.min().item(),
+            "max": sqnr.max().item()
+        }
+
+class L2Norm(AccuracyBase):
+    name: str = "l2_norm"
+
+    def measure(self, model_output, target):
+        preds_tensor, target_tensor = self.prepare_tensors(
+            model_output.preds, target, dtypes=torch.float
+        )
+
+        if isinstance(preds_tensor, dict):
+            return {
+                key: self._compute_mean_l2(preds_tensor[key], target_tensor[key])
+                for key in preds_tensor
+            }
+        else:
+            return self._compute_mean_l2(preds_tensor, target_tensor)
+
+    def _compute_mean_l2(self, preds, targets):
+        if preds.shape[0] != targets.shape[0]:
+            raise ValueError(f"Batch size mismatch: preds {preds.shape}, targets {targets.shape}")
+        preds_flat = preds.view(preds.shape[0], -1)
+        targets_flat = targets.view(targets.shape[0], -1)
+
+        l2 = torch.norm(preds_flat - targets_flat, p=2, dim=1)
+
+        return {
+            "avg": l2.mean().item(),
+            "min": l2.min().item(),
+            "max": l2.max().item()
+        }

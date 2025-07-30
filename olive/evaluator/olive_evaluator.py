@@ -139,6 +139,7 @@ class OliveEvaluator(ABC):
     def compute_accuracy(metric: Metric, model_outputs: Union[tuple, NamedTuple], targets: Any) -> MetricResult:
         """Compute accuracy metrics."""
         evaluate_backend_cls = MetricBackend.registry[metric.backend]
+        # import pdb;pdb.set_trace()
         return evaluate_backend_cls().measure(model_outputs, targets, metric)
 
     @staticmethod
@@ -421,15 +422,20 @@ class OnnxEvaluator(_OliveEvaluator, OnnxEvaluatorMixin):
         if dataloader is None:
             raise ValueError("Dataloader is None — check if get_dataloader returned properly.")
         for input_data, labels in dataloader:
+            # import pdb;pdb.set_trace()
+            # print(f"input data is : {input_data}")
             input_feed = format_data(input_data, io_config)
             result = model.run_session(session, input_feed, **run_kwargs)
+            # import pdb;pdb.set_trace()
             if is_single_tensor_output:
                 result = torch.Tensor(result[0])
             else:
+                # convert to dict of torch tensor
                 result = {name: torch.Tensor(result[i]) for i, name in enumerate(output_names)}
             outputs = post_func(result) if post_func else result
 
             if isinstance(outputs,torch.Tensor):   
+                # keep as numpy or torch arrays
                 preds.append(outputs.cpu())
                 preds_dict[output_names[0]].append(outputs.cpu()) 
                 if is_single_tensor_output:
@@ -440,21 +446,28 @@ class OnnxEvaluator(_OliveEvaluator, OnnxEvaluatorMixin):
                         logits_dict[k].append(result[k].cpu())
             else:
                 for k in output_names:
+                    # sanitize_key(name)
+                    # print(k)
+                    # import pdb;pdb.set_trace()
                     output_tensor=outputs[k].cpu()
                     preds_dict[k].append(output_tensor)
                     logits_dict[k].append(output_tensor)
 
             if isinstance(labels,torch.Tensor):   
+                # keep as numpy or torch arrays
                 targets.append(labels.cpu())
             else:
                 for k in output_names:
+                    # import pdb;pdb.set_trace()
                     targets_dict[k].append(labels[k].cpu() if isinstance(labels, dict) else labels.cpu())   
 
+        # argets = torch.cat(targets, dim=0)
         if is_single_tensor_output:
             targets = torch.cat(targets, dim=0)
             preds = torch.cat(preds_dict[output_names[0]], dim=0)
             logits = torch.cat(logits_dict[output_names[0]], dim=0)
         else:
+            # import pdb;pdb.set_trace()
             targets = {k: torch.cat(targets_dict[k], dim=0) for k in output_names}
             preds = {k: torch.cat(preds_dict[k], dim=0) for k in output_names}
             logits = {k: torch.cat(logits_dict[k], dim=0) for k in output_names}
@@ -463,6 +476,7 @@ class OnnxEvaluator(_OliveEvaluator, OnnxEvaluatorMixin):
         tuning_result_file = inference_settings.get("tuning_result_file")
         if tuning_result_file:
             dump_tuning_result(session.session, tuning_result_file)
+        # import pdb;pdb.set_trace()
         return OliveModelOutput(preds=preds, logits=logits), targets
 
     def _evaluate_onnx_accuracy(
